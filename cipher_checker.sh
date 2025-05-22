@@ -3,7 +3,7 @@
 # Tomcat Top 3 Cipher Suite Checker with Java Support Verification
 # Fetches cipher suites from Mozilla SSL Configuration Generator
 # Also checks Java cipher support using jshell
-# https://raw.githubusercontent.com/mozilla/ssl-config-generator/refs/heads/master/src/static/guidelines/5.7.json
+# Dynamically uses latest guideline version from Mozilla
 
 # Colors for output
 RED='\033[0;31m'
@@ -13,8 +13,9 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
-# Mozilla guidelines URL
-MOZILLA_GUIDELINES_URL="https://raw.githubusercontent.com/mozilla/ssl-config-generator/refs/heads/master/src/static/guidelines/5.7.json"
+# Mozilla guidelines URLs
+MOZILLA_LATEST_URL="https://raw.githubusercontent.com/mozilla/ssl-config-generator/refs/heads/master/src/static/guidelines/latest.json"
+MOZILLA_GUIDELINES_BASE_URL="https://raw.githubusercontent.com/mozilla/ssl-config-generator/refs/heads/master/src/static/guidelines"
 
 # Function to print usage
 usage() {
@@ -73,22 +74,76 @@ check_dependencies() {
     fi
 }
 
-# Function to download Mozilla guidelines
-fetch_mozilla_guidelines() {
+# Function to get latest guideline version
+get_latest_version() {
     local temp_file=$(mktemp)
     
-    echo -e "${BLUE}Fetching Mozilla SSL guidelines...${NC}"
+    echo -e "${BLUE}Fetching latest guideline version...${NC}"
     
     if command -v curl &> /dev/null; then
-        curl -s "$MOZILLA_GUIDELINES_URL" -o "$temp_file"
+        curl -s "$MOZILLA_LATEST_URL" -o "$temp_file"
     else
-        wget -q "$MOZILLA_GUIDELINES_URL" -O "$temp_file"
+        wget -q "$MOZILLA_LATEST_URL" -O "$temp_file"
     fi
     
     if [ $? -ne 0 ] || [ ! -s "$temp_file" ]; then
-        echo -e "${RED}Failed to fetch Mozilla guidelines${NC}"
+        echo -e "${YELLOW}Warning: Failed to fetch latest version, using fallback 5.7${NC}"
         rm -f "$temp_file"
-        exit 1
+        echo "5.7"
+        return
+    fi
+    
+    # Extract version from latest.json
+    local version=$(jq -r '.version' "$temp_file" 2>/dev/null)
+    
+    if [ -z "$version" ] || [ "$version" = "null" ]; then
+        echo -e "${YELLOW}Warning: Could not parse version, using fallback 5.7${NC}"
+        version="5.7"
+    fi
+    
+    rm -f "$temp_file"
+    echo "$version"
+}
+
+# Function to download Mozilla guidelines
+fetch_mozilla_guidelines() {
+    local version=$1
+    local temp_file=$(mktemp)
+    local guidelines_url="${MOZILLA_GUIDELINES_BASE_URL}/${version}.json"
+    
+    echo -e "${BLUE}Fetching Mozilla SSL guidelines v${version}...${NC}"
+    
+    if command -v curl &> /dev/null; then
+        curl -s "$guidelines_url" -o "$temp_file"
+    else
+        wget -q "$guidelines_url" -O "$temp_file"
+    fi
+    
+    if [ $? -ne 0 ] || [ ! -s "$temp_file" ]; then
+        echo -e "${RED}Failed to fetch Mozilla guidelines v${version}${NC}"
+        
+        # Try fallback version if not already using it
+        if [ "$version" != "5.7" ]; then
+            echo -e "${YELLOW}Trying fallback version 5.7...${NC}"
+            rm -f "$temp_file"
+            temp_file=$(mktemp)
+            guidelines_url="${MOZILLA_GUIDELINES_BASE_URL}/5.7.json"
+            
+            if command -v curl &> /dev/null; then
+                curl -s "$guidelines_url" -o "$temp_file"
+            else
+                wget -q "$guidelines_url" -O "$temp_file"
+            fi
+            
+            if [ $? -ne 0 ] || [ ! -s "$temp_file" ]; then
+                echo -e "${RED}Failed to fetch fallback guidelines${NC}"
+                rm -f "$temp_file"
+                exit 1
+            fi
+        else
+            rm -f "$temp_file"
+            exit 1
+        fi
     fi
     
     echo "$temp_file"
@@ -284,14 +339,21 @@ check_ssl_config() {
 show_config_info() {
     local guidelines_file=$1
     local config_level=$2
+    local version=$3
     
-    echo -e "${BLUE}Mozilla ${config_level} Configuration:${NC}"
+    echo -e "${BLUE}Mozilla ${config_level} Configuration (v${version}):${NC}"
     
     local tls_versions=$(get_tls_versions "$guidelines_file" "$config_level")
     echo "TLS Versions: $(echo $tls_versions | tr '\n' ' ')"
     
     local total_ciphers=$(jq -r ".configurations.${config_level}.ciphersuites | length" "$guidelines_file" 2>/dev/null)
     echo "Total Cipher Suites: ${total_ciphers}"
+    
+    # Show guideline metadata if available
+    local guideline_date=$(jq -r '.date // empty' "$guidelines_file" 2>/dev/null)
+    if [ -n "$guideline_date" ]; then
+        echo "Guideline Date: ${guideline_date}"
+    fi
     
     echo ""
 }
@@ -322,11 +384,16 @@ main() {
     
     check_dependencies
     
+    # Get latest guideline version
+    local guideline_version=$(get_latest_version)
+    echo "Using Mozilla SSL Config Guidelines v${guideline_version}"
+    echo ""
+    
     # Fetch Mozilla guidelines
-    local guidelines_file=$(fetch_mozilla_guidelines)
+    local guidelines_file=$(fetch_mozilla_guidelines "$guideline_version")
     
     # Show configuration info
-    show_config_info "$guidelines_file" "$config_level"
+    show_config_info "$guidelines_file" "$config_level" "$guideline_version"
     
     # Get cipher suites and TLS versions
     local cipher_suites=$(get_cipher_suites "$guidelines_file" "$config_level")
@@ -408,7 +475,7 @@ main() {
     
     echo ""
     echo "Mozilla SSL Config Generator:"
-    echo "https://ssl-config.mozilla.org/#server=tomcat&version=10.1&config=${config_level}&guideline=5.7"
+    echo "https://ssl-config.mozilla.org/#server=tomcat&version=10.1&config=${config_level}&guideline=${guideline_version}"
 }
 
 # Run main function with all arguments
