@@ -1,0 +1,40 @@
+# syntax=docker/dockerfile:1
+
+# Allow specifying MAT version
+ARG MAT_VERSION=1.16.0
+
+# Stage 0: Base JRE from Eclipse Temurin
+FROM eclipse-temurin:17-jdk AS jdk
+
+# Stage 1: Download & unpack Eclipse MAT CLI
+FROM jdk AS matbuilder
+WORKDIR /opt/mat
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends wget unzip && \
+    wget -qO mat-cli.zip https://download.eclipse.org/mat/${MAT_VERSION}/mat-cli-${MAT_VERSION}.zip && \
+    unzip mat-cli.zip && \
+    rm mat-cli.zip && \
+    rm -rf /var/lib/apt/lists/*
+
+# Stage 2: Python app with Docker CLI & MAT
+FROM python:3.9-slim
+
+ARG MAT_VERSION
+WORKDIR /app
+
+# Copy JRE and MAT CLI from builders
+COPY --from=jre /opt/java/openjdk /opt/java/openjdk
+COPY --from=matbuilder /opt/mat /opt/mat
+
+# Update PATH to include Java
+ENV PATH="/opt/java/openjdk/bin:${PATH}"
+
+# Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# App code
+COPY heap_monitor.py .
+
+# Expose monitoring API
+EXPOSE 5000
